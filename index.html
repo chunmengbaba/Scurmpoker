@@ -92,15 +92,27 @@
         const isFirebaseAvailable = window.__scrum_poker_firebase_config && Object.keys(window.__scrum_poker_firebase_config).length > 0;
         
         if (isFirebaseAvailable) {
-            try {
-                const firebaseConfig = window.__scrum_poker_firebase_config;
-                const app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-                appId = window.__scrum_poker_app_id;
-            } catch (e) {
-                console.error("Firebase initialization failed:", e);
-            }
+        try {
+        const firebaseConfig = {
+            apiKey: "AIzaSyDHBMK_9sWyQVZlM_avyJtS7-r8XdmQQuE",
+            authDomain: "scurmpoker.firebaseapp.com",
+            projectId: "scurmpoker",
+            storageBucket: "scurmpoker.firebasestorage.app",
+            messagingSenderId: "73220832696",
+            appId: "1:73220832696:web:a8d7f6c1556cea032be34d",
+            measurementId: "G-SK17HW3WFV"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+        appId = window.__scrum_poker_app_id;
+
+    } catch (e) {
+        console.error("Firebase initialization failed:", e);
+    }
+}
+
         }
 
         // --- Constants ---
