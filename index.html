@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- 載入 Lucide Icons (必須在 Babel 腳本前載入) -->
+    <!-- 載入 Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     
     <!-- 載入 Firebase 模組化 SDK (type="module" 確保非同步載入) -->
@@ -45,14 +45,17 @@
         window.__scrum_poker_app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         window.__scrum_poker_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // 處理 Firebase 配置 (Canvas 環境變數)
-        try {
-            const rawConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-            window.__scrum_poker_config = JSON.parse(rawConfig);
-        } catch (e) {
-            console.error("Failed to parse __firebase_config. Assuming unconfigured state.", e);
-            window.__scrum_poker_config = null;
-        }
+        // --- 直接使用用戶提供的 Firebase 配置 (硬編碼) ---
+        window.__scrum_poker_config = {
+            apiKey: "AIzaSyDHBMK_9sWyQVZlM_avyJtS7-r8XdmQQuE",
+            authDomain: "scurmpoker.firebaseapp.com",
+            projectId: "scurmpoker",
+            storageBucket: "scurmpoker.firebasestorage.app",
+            messagingSenderId: "73220832696",
+            appId: "1:73220832696:web:a8d7f6c1556cea032be34d",
+            measurementId: "G-SK17HW3WFV"
+        };
+        // ---------------------------------------------------
     </script>
 
     <style>
@@ -102,38 +105,31 @@
           const [dbInstance, setDbInstance] = useState(null);
           const [authInstance, setAuthInstance] = useState(null);
           const [currentAppId, setCurrentAppId] = useState(null);
-          const [firebaseStatus, setFirebaseStatus] = useState('loading'); // 'loading', 'success', 'failed'
-          
+          const [isFirebaseInitialized, setIsFirebaseInitialized] = useState(false);
+          const [initError, setInitError] = useState(null); // Firebase 初始化錯誤訊息
+
           // --- App States ---
-          const [user, setUser] = useState(null);
+          // user 儲存 Firebase User 物件。如果為本地模式，則為 { uid: 'local_user' }
+          const [user, setUser] = useState(null); 
           const [name, setName] = useState('');
           const [roomId, setRoomId] = useState('');
           const [isInRoom, setIsInRoom] = useState(false);
           const [roomData, setRoomData] = useState({ users: {}, showCards: false });
           const [myVote, setMyVote] = useState(null);
 
-          // 判斷是否處於演示模式
-          const demoMode = firebaseStatus !== 'success'; 
+          // 判斷是否處於本地模式 (無法同步)
+          const isLocalMode = !isFirebaseInitialized || !!initError || (user && user.uid === 'local_user'); 
 
           // 1. Firebase 初始化
           useEffect(() => {
             // 檢查 Firebase SDK 函數是否已載入
             if (typeof initializeApp !== 'function') {
-                console.warn("Firebase SDK functions not ready yet.");
-                // 由於 SDK 載入是模組化的，如果此時還沒準備好，很可能就失敗了
-                // 但我們等待一次 Auth Listener 來確定最終狀態
+                setInitError('Firebase SDK 正在載入中，請稍候...');
                 return; 
             }
 
-            // 獲取配置
+            // 獲取硬編碼配置
             const config = window.__scrum_poker_config;
-
-            // 檢查配置是否有效 (例如，是否包含 projectId)
-            if (!config || !config.projectId) {
-                console.warn("Firebase environment configuration is missing or invalid. Activating Demo Mode.");
-                setFirebaseStatus('failed'); // 環境未配置，直接進入失敗/演示模式
-                return;
-            }
 
             try {
                 const app = initializeApp(config);
@@ -143,17 +139,19 @@
                 setAuthInstance(authI);
                 setDbInstance(dbI);
                 setCurrentAppId(window.__scrum_poker_app_id);
-                setFirebaseStatus('success'); // 初始化成功
+                setIsFirebaseInitialized(true); // 初始化成功
+                setInitError(null); // 清除錯誤
 
             } catch (e) {
                 console.error("Firebase initialization failed:", e);
-                setFirebaseStatus('failed'); // 初始化失敗
+                // 更新錯誤訊息，因為配置已固定
+                setInitError(`Firebase 初始化失敗: ${e.message}。請檢查硬編碼的配置是否正確。多人同步功能將無法使用 (本地模式)。`);
             }
-          }, [initializeApp]); // 依賴 initializeApp 函數 (雖然它在全域，但確保在執行時存在)
+          }, [initializeApp]);
 
-          // 2. Auth 登入和監聽
+          // 2. Auth 登入和監聽 (僅在 Firebase 成功初始化且無錯誤時執行)
           useEffect(() => {
-            if (firebaseStatus !== 'success' || !authInstance || typeof onAuthStateChanged !== 'function') return;
+            if (!isFirebaseInitialized || initError || !authInstance || typeof onAuthStateChanged !== 'function') return;
 
             const initAuth = async () => {
               try {
@@ -163,8 +161,10 @@
                 } else {
                   await signInAnonymously(authInstance);
                 }
+                // Auth success is handled by onAuthStateChanged
               } catch (err) {
                 console.error("Auth failed:", err);
+                setInitError('Firebase 認證失敗。請檢查安全規則。');
               }
             };
 
@@ -177,11 +177,12 @@
             });
 
             return () => unsubscribe();
-          }, [firebaseStatus, authInstance]); 
+          }, [isFirebaseInitialized, initError, authInstance]); 
 
-          // 3. 監聽房間數據 (依賴 Firebase 實例和 User)
+          // 3. 監聽房間數據 (僅在 Firebase 成功初始化且登入後執行)
           useEffect(() => {
-            if (!isInRoom || !user || !dbInstance || !currentAppId || demoMode || typeof onSnapshot !== 'function') return;
+            // 如果是本地模式或必要的實例不存在，則不監聽
+            if (isLocalMode || !isInRoom || !user || !dbInstance || !currentAppId || typeof onSnapshot !== 'function') return;
 
             const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             
@@ -207,9 +208,9 @@
                   showCards: data.showCards || false
                 });
                 
-                // 同步自己的投票狀態
+                // 同步自己的投票狀態 (如果遠端被重置)
                 if (data.users && user && data.users[user.uid] && data.users[user.uid].vote === null && myVote !== null) {
-                    setMyVote(null); // 遠端重置，本地也重置
+                    setMyVote(null);
                 }
               } else {
                 // 房間不存在，初始化它
@@ -220,7 +221,7 @@
             });
 
             return () => unsubscribe();
-          }, [isInRoom, user, roomId, dbInstance, currentAppId, demoMode, name, myVote]); 
+          }, [isLocalMode, isInRoom, user, roomId, dbInstance, currentAppId, name, myVote]); 
 
           // --- Handlers ---
 
@@ -230,18 +231,19 @@
             
             localStorage.setItem('scrum_poker_name', name);
             
-            if (demoMode) {
-              // 演示模式初始化假資料
+            if (isLocalMode) {
+              // 本地模式：模擬數據並設定本地假用戶
+              console.log("進入本地模式 (Local Mode).");
               setRoomData({
                 users: {
-                  'me': { name: name, vote: null },
-                  'bot1': { name: 'Alex (Bot)', vote: '5' },
+                  'local_user': { name: name, vote: null },
+                  'bot1': { name: 'Alex (Bot)', vote: null },
                   'bot2': { name: 'Sam (Bot)', vote: null }
                 },
                 showCards: false
               });
-              // 設置一個假的 user object 給演示模式
-              setUser({ uid: 'me' }); 
+              // 設置一個假的 user object 
+              setUser({ uid: 'local_user' }); 
             }
             
             setIsInRoom(true);
@@ -252,15 +254,17 @@
 
             setMyVote(value); // 本地立即更新 UI
 
-            if (demoMode) {
+            if (isLocalMode) {
+              // 本地模式：更新本地數據
               const currentUsers = roomData.users || {};
               setRoomData(prev => ({
                 ...prev,
-                users: { ...currentUsers, 'me': { ...currentUsers.me, vote: value } }
+                users: { ...currentUsers, [user.uid]: { ...currentUsers[user.uid], vote: value } }
               }));
               return;
             }
 
+            // 同步模式 (Sync Mode)
             if (!user || !dbInstance || !currentAppId) return;
             const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             await updateDoc(roomRef, {
@@ -269,7 +273,7 @@
           };
 
           const handleReveal = async () => {
-            if (demoMode) {
+            if (isLocalMode) {
               setRoomData(prev => ({ ...prev, showCards: true }));
               return;
             }
@@ -281,13 +285,16 @@
 
           const handleReset = async () => {
             setMyVote(null);
-            if (demoMode) {
+            
+            if (isLocalMode) {
+              // 本地模式：重置所有本地用戶
+              const newUsersState = {};
+              Object.keys(roomData.users || {}).forEach(uid => {
+                  newUsersState[uid] = { ...roomData.users[uid], vote: null };
+              });
+
               setRoomData({
-                users: {
-                    'me': { name: name, vote: null },
-                    'bot1': { name: 'Alex (Bot)', vote: null },
-                    'bot2': { name: 'Sam (Bot)', vote: null }
-                },
+                users: newUsersState,
                 showCards: false
               });
               return;
@@ -430,14 +437,12 @@
             };
 
 
-          // 如果 Firebase 仍在載入且 SDK 尚未完全準備好
-          if (firebaseStatus === 'loading') {
-              // 檢查 SDK 函數是否已暴露，如果已暴露但還沒成功，則顯示更明確的訊息
-              const isSDKReady = typeof initializeApp === 'function';
+          // 如果 Firebase 仍在載入
+          if (!isFirebaseInitialized && !initError) {
               return (
                   <div className="min-h-screen flex items-center justify-center bg-slate-50">
                       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-                      <p className="ml-4 text-slate-600">{isSDKReady ? '驗證 Firebase 設置中...' : '載入服務中...'}</p>
+                      <p className="ml-4 text-slate-600">服務啟動中...</p>
                   </div>
               );
           }
@@ -454,7 +459,7 @@
                     </div>
                   </div>
                   <h1 className="text-2xl font-bold text-center mb-2 text-slate-800">Scrum Poker</h1>
-                  <p className="text-center text-slate-500 mb-8">乾淨、無廣告的敏捷估點工具</p>
+                  <p className="text-center text-slate-500 mb-8">乾淨、高效的敏捷估點工具</p>
                   
                   <form onSubmit={handleLogin} className="space-y-4">
                     <div>
@@ -495,10 +500,10 @@
                     </button>
                   </form>
 
-                  {demoMode && (
+                  {initError && (
                      <div className="mt-6 p-3 bg-red-50 text-red-700 text-xs rounded border border-red-100 flex items-start gap-2 animate-fade-in">
                         <SafeIcon Icon={InfoIcon} className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                        <p>偵測到未配置的 Firebase，應用程式目前處於**演示模式 (Demo Mode)**。多人同步功能將不可用。</p>
+                        <p>{initError}</p>
                      </div>
                   )}
                 </div>
@@ -518,7 +523,7 @@
                      <h1 className="font-bold text-slate-700 hidden sm:block">房間: {roomId}</h1>
                      <span className="font-bold text-slate-700 sm:hidden">#{roomId}</span>
                   </div>
-                  {demoMode && <span className="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full">演示模式 (無同步)</span>}
+                  {isLocalMode && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full">本地模式 (無同步)</span>}
                 </div>
                 
                 <div className="flex items-center gap-2">
