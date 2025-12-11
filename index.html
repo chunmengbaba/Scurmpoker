@@ -39,8 +39,8 @@
 
         // 傳遞 Canvas 環境變數
         window.__scrum_poker_app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        window.__scrum_poker_firebase_config = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         window.__scrum_poker_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // 注意：這裡不再傳遞 __firebase_config，因為我們將使用硬編碼的配置
     </script>
 
     <style>
@@ -89,12 +89,12 @@
         } = FB;
 
         let db, auth, appId;
-        // 確保 Firebase config 變數已初始化，以便在 Auth 檢查中使用
-        const isFirebaseAvailable = window.__scrum_poker_firebase_config && Object.keys(window.__scrum_poker_firebase_config).length > 0;
-        
-        if (isFirebaseAvailable) {
+        let isFirebaseInitialized = false; // 新增旗標：追蹤 Firebase 是否成功初始化
+
+        // 檢查 Firebase SDK 函數是否已載入 (從 type=module 腳本)
+        if (typeof initializeApp === 'function') {
             try {
-                // *** 根據您的要求，使用硬編碼的 Firebase 配置 ***
+                // 使用您硬編碼的配置
                 const firebaseConfig = {
                     apiKey: "AIzaSyDHBMK_9sWyQVZlM_avyJtS7-r8XdmQQuE",
                     authDomain: "scurmpoker.firebaseapp.com",
@@ -109,9 +109,10 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 appId = window.__scrum_poker_app_id;
-
+                isFirebaseInitialized = true; // 成功初始化
             } catch (e) {
                 console.error("Firebase initialization failed:", e);
+                // 失敗時保持 isFirebaseInitialized = false
             }
         }
 
@@ -213,12 +214,14 @@
           const [isInRoom, setIsInRoom] = useState(false);
           const [roomData, setRoomData] = useState({ users: {}, showCards: false });
           const [myVote, setMyVote] = useState(null);
-          const [demoMode, setDemoMode] = useState(!isFirebaseAvailable);
+          // 使用 isFirebaseInitialized 旗標來決定是否進入演示模式
+          const [demoMode, setDemoMode] = useState(!isFirebaseInitialized); 
           const [isAuthReady, setIsAuthReady] = useState(false); // 新增狀態
 
           // 初始化 Auth
           useEffect(() => {
-            if (!isFirebaseAvailable || !auth) {
+            // 修正: 檢查 db (初始化成功標誌) 而不是舊的 isFirebaseAvailable
+            if (!isFirebaseInitialized || !auth || !db) {
                 setDemoMode(true);
                 setIsAuthReady(true);
                 return;
@@ -232,6 +235,7 @@
                 } else {
                   await signInAnonymously(auth);
                 }
+                setDemoMode(false); // 確保在成功登入後退出演示模式
               } catch (err) {
                 console.error("Auth failed:", err);
                 setDemoMode(true);
@@ -259,7 +263,7 @@
             // 確保將自己寫入房間
             const joinRoom = async () => {
               try {
-                if (isFirebaseAvailable && !demoMode) {
+                if (!demoMode) { // 僅在非演示模式下寫入 Firestore
                      await setDoc(roomRef, { 
                         users: { 
                           [user.uid]: { name: name, vote: null } 
