@@ -25,7 +25,7 @@
     <!-- 載入 Lucide Icons (必須在 Babel 腳本前載入) -->
     <script src="https://unpkg.com/lucide@latest"></script>
     
-    <!-- 載入 Firebase 模組化 SDK -->
+    <!-- 載入 Firebase 模組化 SDK (type="module" 確保非同步載入) -->
     <script type="module">
         // 載入所有需要的 Firebase SDK 函數
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -44,6 +44,15 @@
         // 傳遞 Canvas 環境變數
         window.__scrum_poker_app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         window.__scrum_poker_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // 處理 Firebase 配置 (Canvas 環境變數)
+        try {
+            const rawConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+            window.__scrum_poker_config = JSON.parse(rawConfig);
+        } catch (e) {
+            console.error("Failed to parse __firebase_config. Assuming unconfigured state.", e);
+            window.__scrum_poker_config = null;
+        }
     </script>
 
     <style>
@@ -110,25 +119,24 @@
           useEffect(() => {
             // 檢查 Firebase SDK 函數是否已載入
             if (typeof initializeApp !== 'function') {
-                // 如果 SDK 模組尚未載入，我們無法初始化，視為失敗
-                console.error("Firebase SDK functions not loaded yet.");
-                setFirebaseStatus('failed');
+                console.warn("Firebase SDK functions not ready yet.");
+                // 由於 SDK 載入是模組化的，如果此時還沒準備好，很可能就失敗了
+                // 但我們等待一次 Auth Listener 來確定最終狀態
                 return; 
             }
 
+            // 獲取配置
+            const config = window.__scrum_poker_config;
+
+            // 檢查配置是否有效 (例如，是否包含 projectId)
+            if (!config || !config.projectId) {
+                console.warn("Firebase environment configuration is missing or invalid. Activating Demo Mode.");
+                setFirebaseStatus('failed'); // 環境未配置，直接進入失敗/演示模式
+                return;
+            }
+
             try {
-                // 使用您硬編碼的配置進行初始化
-                const firebaseConfig = {
-                    apiKey: "AIzaSyDHBMK_9sWyQVZlM_avyJtS7-r8XdmQQuE",
-                    authDomain: "scurmpoker.firebaseapp.com",
-                    projectId: "scurmpoker",
-                    storageBucket: "scurmpoker.firebasestorage.app",
-                    messagingSenderId: "73220832696",
-                    appId: "1:73220832696:web:a8d7f6c1556cea032be34d",
-                    measurementId: "G-SK17HW3WFV"
-                };
-                
-                const app = initializeApp(firebaseConfig);
+                const app = initializeApp(config);
                 const authI = getAuth(app);
                 const dbI = getFirestore(app);
                 
@@ -141,11 +149,11 @@
                 console.error("Firebase initialization failed:", e);
                 setFirebaseStatus('failed'); // 初始化失敗
             }
-          }, []); // 僅在元件掛載時執行一次
+          }, [initializeApp]); // 依賴 initializeApp 函數 (雖然它在全域，但確保在執行時存在)
 
           // 2. Auth 登入和監聽
           useEffect(() => {
-            if (firebaseStatus !== 'success' || !authInstance) return;
+            if (firebaseStatus !== 'success' || !authInstance || typeof onAuthStateChanged !== 'function') return;
 
             const initAuth = async () => {
               try {
@@ -157,8 +165,6 @@
                 }
               } catch (err) {
                 console.error("Auth failed:", err);
-                // 登入失敗不應該阻礙 Firebase 狀態 (firebaseStatus 仍為 'success')，
-                // 而是讓 onAuthStateChanged 處理匿名使用者或登出狀態。
               }
             };
 
@@ -171,11 +177,11 @@
             });
 
             return () => unsubscribe();
-          }, [firebaseStatus, authInstance]); // 依賴初始化成功和 Auth 實例
+          }, [firebaseStatus, authInstance]); 
 
           // 3. 監聽房間數據 (依賴 Firebase 實例和 User)
           useEffect(() => {
-            if (!isInRoom || !user || !dbInstance || !currentAppId || demoMode) return;
+            if (!isInRoom || !user || !dbInstance || !currentAppId || demoMode || typeof onSnapshot !== 'function') return;
 
             const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             
@@ -305,7 +311,6 @@
           const copyLink = () => {
             const text = `Scrum Poker Room ID: ${roomId}\n(請將當前網頁連結也分享給隊友)`;
             
-            // 複製邏輯 (與之前相同，確保兼容性)
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(text).then(() => {
                      console.log("房間資訊已複製！");
@@ -355,7 +360,6 @@
 
 
           // --- Components ---
-          // 卡片元件 (保持不變)
           const Card = ({ value, selected, onClick, hidden = false }) => {
               if (hidden) {
                 return (
@@ -388,7 +392,6 @@
               );
             };
 
-            // 玩家頭像與出牌狀態 (保持不變)
             const PlayerSeat = ({ name, vote, showCards, isMe }) => {
               const hasVoted = vote !== null && vote !== undefined;
               
@@ -427,12 +430,14 @@
             };
 
 
-          // 如果 Firebase 仍在載入或等待 Auth 設置
-          if (firebaseStatus === 'loading' || (firebaseStatus === 'success' && !user)) {
+          // 如果 Firebase 仍在載入且 SDK 尚未完全準備好
+          if (firebaseStatus === 'loading') {
+              // 檢查 SDK 函數是否已暴露，如果已暴露但還沒成功，則顯示更明確的訊息
+              const isSDKReady = typeof initializeApp === 'function';
               return (
                   <div className="min-h-screen flex items-center justify-center bg-slate-50">
                       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-                      <p className="ml-4 text-slate-600">載入服務中...</p>
+                      <p className="ml-4 text-slate-600">{isSDKReady ? '驗證 Firebase 設置中...' : '載入服務中...'}</p>
                   </div>
               );
           }
@@ -491,7 +496,7 @@
                   </form>
 
                   {demoMode && (
-                     <div className="mt-6 p-3 bg-amber-50 text-amber-700 text-xs rounded border border-amber-100 flex items-start gap-2">
+                     <div className="mt-6 p-3 bg-red-50 text-red-700 text-xs rounded border border-red-100 flex items-start gap-2 animate-fade-in">
                         <SafeIcon Icon={InfoIcon} className="w-4 h-4 mt-0.5 flex-shrink-0" />
                         <p>偵測到未配置的 Firebase，應用程式目前處於**演示模式 (Demo Mode)**。多人同步功能將不可用。</p>
                      </div>
@@ -513,7 +518,7 @@
                      <h1 className="font-bold text-slate-700 hidden sm:block">房間: {roomId}</h1>
                      <span className="font-bold text-slate-700 sm:hidden">#{roomId}</span>
                   </div>
-                  {demoMode && <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">演示模式</span>}
+                  {demoMode && <span className="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full">演示模式 (無同步)</span>}
                 </div>
                 
                 <div className="flex items-center gap-2">
