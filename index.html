@@ -27,20 +27,23 @@
     
     <!-- 載入 Firebase 模組化 SDK -->
     <script type="module">
+        // 載入所有需要的 Firebase SDK 函數
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 將必要的 Firebase 函數和變數暴露給全域 window 物件，供 Babel 腳本使用
+        // 將必要的 Firebase 函數和變數暴露給全域 window 物件
         window.FirebaseSDK = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken,
-            getFirestore, doc, onSnapshot, setDoc, updateDoc 
+            getFirestore, doc, onSnapshot, setDoc, updateDoc
         };
+
+        // 設置日誌級別，用於除錯
+        setLogLevel('Debug');
 
         // 傳遞 Canvas 環境變數
         window.__scrum_poker_app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         window.__scrum_poker_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        // 注意：這裡不再傳遞 __firebase_config，因為我們將使用硬編碼的配置
     </script>
 
     <style>
@@ -69,18 +72,12 @@
         // --- 獲取全域變數和 Firebase SDK ---
         const { useState, useEffect, useMemo } = React;
         
-        // 確保 lucide 全局變數存在，以避免解構錯誤
         const lucideIcons = typeof lucide !== 'undefined' ? lucide : {};
-
-        // 將 Lucide Icons 重新命名並安全解構，確保 React 將它們識別為元件
         const { 
-            User: UserIcon, 
-            Copy: CopyIcon, 
-            Eye: EyeIcon, 
-            RotateCcw: RotateCcwIcon, 
-            LogOut: LogOutIcon, 
-            Info: InfoIcon 
+            User: UserIcon, Copy: CopyIcon, Eye: EyeIcon, 
+            RotateCcw: RotateCcwIcon, LogOut: LogOutIcon, Info: InfoIcon 
         } = lucideIcons; 
+        const SafeIcon = ({ Icon, className }) => typeof Icon === 'function' ? <Icon className={className} /> : <div className={className}></div>;
 
         const FB = window.FirebaseSDK || {};
         const { 
@@ -88,13 +85,39 @@
             getFirestore, doc, onSnapshot, setDoc, updateDoc 
         } = FB;
 
-        let db, auth, appId;
-        let isFirebaseInitialized = false; // 新增旗標：追蹤 Firebase 是否成功初始化
+        const FIBONACCI = ['0', '1', '2', '3', '5', '8', '13', '21', '34', '55', '89', '?', '☕'];
 
-        // 檢查 Firebase SDK 函數是否已載入 (從 type=module 腳本)
-        if (typeof initializeApp === 'function') {
+        // --- Main Application ---
+        const App = () => {
+          // --- Firebase States ---
+          const [dbInstance, setDbInstance] = useState(null);
+          const [authInstance, setAuthInstance] = useState(null);
+          const [currentAppId, setCurrentAppId] = useState(null);
+          const [firebaseStatus, setFirebaseStatus] = useState('loading'); // 'loading', 'success', 'failed'
+          
+          // --- App States ---
+          const [user, setUser] = useState(null);
+          const [name, setName] = useState('');
+          const [roomId, setRoomId] = useState('');
+          const [isInRoom, setIsInRoom] = useState(false);
+          const [roomData, setRoomData] = useState({ users: {}, showCards: false });
+          const [myVote, setMyVote] = useState(null);
+
+          // 判斷是否處於演示模式
+          const demoMode = firebaseStatus !== 'success'; 
+
+          // 1. Firebase 初始化
+          useEffect(() => {
+            // 檢查 Firebase SDK 函數是否已載入
+            if (typeof initializeApp !== 'function') {
+                // 如果 SDK 模組尚未載入，我們無法初始化，視為失敗
+                console.error("Firebase SDK functions not loaded yet.");
+                setFirebaseStatus('failed');
+                return; 
+            }
+
             try {
-                // 使用您硬編碼的配置
+                // 使用您硬編碼的配置進行初始化
                 const firebaseConfig = {
                     apiKey: "AIzaSyDHBMK_9sWyQVZlM_avyJtS7-r8XdmQQuE",
                     authDomain: "scurmpoker.firebaseapp.com",
@@ -104,172 +127,66 @@
                     appId: "1:73220832696:web:a8d7f6c1556cea032be34d",
                     measurementId: "G-SK17HW3WFV"
                 };
-
+                
                 const app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-                appId = window.__scrum_poker_app_id;
-                isFirebaseInitialized = true; // 成功初始化
+                const authI = getAuth(app);
+                const dbI = getFirestore(app);
+                
+                setAuthInstance(authI);
+                setDbInstance(dbI);
+                setCurrentAppId(window.__scrum_poker_app_id);
+                setFirebaseStatus('success'); // 初始化成功
+
             } catch (e) {
                 console.error("Firebase initialization failed:", e);
-                // 失敗時保持 isFirebaseInitialized = false
+                setFirebaseStatus('failed'); // 初始化失敗
             }
-        }
+          }, []); // 僅在元件掛載時執行一次
 
-        // --- Constants ---
-        const FIBONACCI = ['0', '1', '2', '3', '5', '8', '13', '21', '34', '55', '89', '?', '☕'];
-
-        // 檢查圖標元件是否有效 (如果無效，返回一個簡單的空元件)
-        const SafeIcon = ({ Icon, className }) => {
-            return typeof Icon === 'function' 
-                ? <Icon className={className} /> 
-                : <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="12" cy="12" r="10" strokeWidth="2"/></svg>;
-        };
-
-
-        // --- Components ---
-
-        // 卡片元件
-        const Card = ({ value, selected, onClick, hidden = false }) => {
-          if (hidden) {
-            return (
-              <div className={`
-                relative w-14 h-20 sm:w-16 sm:h-24 rounded-lg shadow-md border-2 transition-all duration-300 transform
-                ${selected ? '-translate-y-2 border-blue-500 shadow-blue-200' : 'border-slate-200 bg-slate-100'}
-                flex items-center justify-center
-              `}>
-                <div className="w-full h-full rounded bg-blue-500 opacity-90 flex items-center justify-center">
-                    {/* 隱藏卡片圖標 */}
-                    <div className="w-8 h-12 border-2 border-white rounded-sm opacity-50"></div>
-                </div>
-              </div>
-            );
-          }
-
-          return (
-            <button
-              onClick={onClick}
-              disabled={!onClick}
-              className={`
-                relative w-14 h-20 sm:w-16 sm:h-24 rounded-lg shadow-md border-2 transition-all duration-200
-                flex items-center justify-center text-xl sm:text-2xl font-bold
-                ${selected 
-                  ? 'bg-blue-600 text-white border-blue-700 -translate-y-2 shadow-xl' 
-                  : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:-translate-y-1'
-                }
-              `}
-            >
-              {value}
-            </button>
-          );
-        };
-
-        // 玩家頭像與出牌狀態
-        const PlayerSeat = ({ name, vote, showCards, isMe }) => {
-          const hasVoted = vote !== null && vote !== undefined;
-          
-          return (
-            <div className="flex flex-col items-center gap-2 p-2 transition-all duration-300">
-              <div className="relative">
-                {/* 卡片顯示區 */}
-                <div className={`
-                  w-12 h-16 sm:w-14 sm:h-20 rounded shadow-sm flex items-center justify-center font-bold text-lg
-                  transition-all duration-500 transform
-                  ${hasVoted 
-                    ? (showCards || isMe ? 'bg-white border-2 border-blue-500 text-blue-600 rotate-0' : 'bg-blue-500 border-2 border-blue-600 rotate-y-180') 
-                    : 'border-2 border-dashed border-slate-300 bg-slate-50 text-slate-300'
-                  }
-                `}>
-                  {hasVoted ? (
-                    (showCards || isMe) ? vote : <div className="w-6 h-8 border border-white/50 rounded-sm"></div>
-                  ) : (
-                    <span className="text-xs">思考中</span>
-                  )}
-                </div>
-                
-                {/* 狀態指示燈 */}
-                {hasVoted && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full flex items-center justify-center">
-                    <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                )}
-              </div>
-
-              <div className="text-center">
-                <div className={`text-sm font-medium ${isMe ? 'text-blue-600' : 'text-slate-700'}`}>
-                  {name} {isMe && '(你)'}
-                </div>
-              </div>
-            </div>
-          );
-        };
-
-        // --- Main Application ---
-        const App = () => {
-          const [user, setUser] = useState(null);
-          const [name, setName] = useState('');
-          const [roomId, setRoomId] = useState('');
-          const [isInRoom, setIsInRoom] = useState(false);
-          const [roomData, setRoomData] = useState({ users: {}, showCards: false });
-          const [myVote, setMyVote] = useState(null);
-          // 使用 isFirebaseInitialized 旗標來決定是否進入演示模式
-          const [demoMode, setDemoMode] = useState(!isFirebaseInitialized); 
-          const [isAuthReady, setIsAuthReady] = useState(false); // 新增狀態
-
-          // 初始化 Auth
+          // 2. Auth 登入和監聽
           useEffect(() => {
-            // 修正: 檢查 db (初始化成功標誌) 而不是舊的 isFirebaseAvailable
-            if (!isFirebaseInitialized || !auth || !db) {
-                setDemoMode(true);
-                setIsAuthReady(true);
-                return;
-            }
+            if (firebaseStatus !== 'success' || !authInstance) return;
 
             const initAuth = async () => {
               try {
                 const authToken = window.__scrum_poker_auth_token;
                 if (authToken) {
-                  await signInWithCustomToken(auth, authToken);
+                  await signInWithCustomToken(authInstance, authToken);
                 } else {
-                  await signInAnonymously(auth);
+                  await signInAnonymously(authInstance);
                 }
-                setDemoMode(false); // 確保在成功登入後退出演示模式
               } catch (err) {
                 console.error("Auth failed:", err);
-                setDemoMode(true);
+                // 登入失敗不應該阻礙 Firebase 狀態 (firebaseStatus 仍為 'success')，
+                // 而是讓 onAuthStateChanged 處理匿名使用者或登出狀態。
               }
-              setIsAuthReady(true);
             };
 
             initAuth();
-            const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+            
+            const unsubscribe = onAuthStateChanged(authInstance, (currentUser) => {
               setUser(currentUser);
               const savedName = localStorage.getItem('scrum_poker_name');
               if (savedName) setName(savedName);
             });
 
             return () => unsubscribe();
-          }, []);
+          }, [firebaseStatus, authInstance]); // 依賴初始化成功和 Auth 實例
 
-          // 監聽房間數據
+          // 3. 監聽房間數據 (依賴 Firebase 實例和 User)
           useEffect(() => {
-            if (!isInRoom || !user || demoMode || !db || !appId || !isAuthReady) return; // 依賴 isAuthReady
+            if (!isInRoom || !user || !dbInstance || !currentAppId || demoMode) return;
 
-            // Firestore 路徑: artifacts/{appId}/public/data/rooms/{roomId}
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             
             // 確保將自己寫入房間
             const joinRoom = async () => {
               try {
-                if (!demoMode) { // 僅在非演示模式下寫入 Firestore
-                     await setDoc(roomRef, { 
-                        users: { 
-                          [user.uid]: { name: name, vote: null } 
-                        } 
-                      }, { merge: true });
-                }
+                  await setDoc(roomRef, { 
+                    users: { 
+                      [user.uid]: { name: name, vote: null } 
+                    } 
+                  }, { merge: true });
               } catch (e) {
                 console.error("Error joining room:", e);
               }
@@ -297,7 +214,7 @@
             });
 
             return () => unsubscribe();
-          }, [isInRoom, user, roomId, demoMode, name, myVote, isAuthReady]); 
+          }, [isInRoom, user, roomId, dbInstance, currentAppId, demoMode, name, myVote]); 
 
           // --- Handlers ---
 
@@ -338,8 +255,8 @@
               return;
             }
 
-            if (!user || !db || !appId) return;
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            if (!user || !dbInstance || !currentAppId) return;
+            const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             await updateDoc(roomRef, {
               [`users.${user.uid}.vote`]: value
             });
@@ -351,8 +268,8 @@
               return;
             }
 
-            if (!db || !appId) return;
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            if (!dbInstance || !currentAppId) return;
+            const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             await updateDoc(roomRef, { showCards: true });
           };
 
@@ -370,8 +287,8 @@
               return;
             }
 
-            if (!db || !appId) return;
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            if (!dbInstance || !currentAppId) return;
+            const roomRef = doc(dbInstance, 'artifacts', currentAppId, 'public', 'data', 'rooms', roomId);
             
             // 重置所有人的投票
             const newUsersState = {};
@@ -388,9 +305,9 @@
           const copyLink = () => {
             const text = `Scrum Poker Room ID: ${roomId}\n(請將當前網頁連結也分享給隊友)`;
             
+            // 複製邏輯 (與之前相同，確保兼容性)
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(text).then(() => {
-                     // 複製成功提示
                      console.log("房間資訊已複製！");
                 }).catch(() => {
                      fallbackCopy(text);
@@ -417,7 +334,6 @@
 
           // --- Statistics ---
           const stats = useMemo(() => {
-            // 確保 roomData.users 是一個物件
             const usersArray = Object.values(roomData.users || {}); 
             
             const votes = usersArray
@@ -437,12 +353,86 @@
             };
           }, [roomData]);
 
-          // 如果 Auth 尚未準備好，顯示載入畫面
-          if (!isAuthReady) {
+
+          // --- Components ---
+          // 卡片元件 (保持不變)
+          const Card = ({ value, selected, onClick, hidden = false }) => {
+              if (hidden) {
+                return (
+                  <div className={`
+                    relative w-14 h-20 sm:w-16 sm:h-24 rounded-lg shadow-md border-2 transition-all duration-300 transform
+                    ${selected ? '-translate-y-2 border-blue-500 shadow-blue-200' : 'border-slate-200 bg-slate-100'}
+                    flex items-center justify-center
+                  `}>
+                    <div className="w-full h-full rounded bg-blue-500 opacity-90 flex items-center justify-center">
+                        <div className="w-8 h-12 border-2 border-white rounded-sm opacity-50"></div>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <button
+                  onClick={onClick}
+                  disabled={!onClick}
+                  className={`
+                    relative w-14 h-20 sm:w-16 sm:h-24 rounded-lg shadow-md border-2 transition-all duration-200
+                    flex items-center justify-center text-xl sm:text-2xl font-bold
+                    ${selected 
+                      ? 'bg-blue-600 text-white border-blue-700 -translate-y-2 shadow-xl' 
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:-translate-y-1'
+                    }
+                  `}
+                >
+                  {value}
+                </button>
+              );
+            };
+
+            // 玩家頭像與出牌狀態 (保持不變)
+            const PlayerSeat = ({ name, vote, showCards, isMe }) => {
+              const hasVoted = vote !== null && vote !== undefined;
+              
+              return (
+                <div className="flex flex-col items-center gap-2 p-2 transition-all duration-300">
+                  <div className="relative">
+                    <div className={`
+                      w-12 h-16 sm:w-14 sm:h-20 rounded shadow-sm flex items-center justify-center font-bold text-lg
+                      transition-all duration-500 transform
+                      ${hasVoted 
+                        ? (showCards || isMe ? 'bg-white border-2 border-blue-500 text-blue-600 rotate-0' : 'bg-blue-500 border-2 border-blue-600 rotate-y-180') 
+                        : 'border-2 border-dashed border-slate-300 bg-slate-50 text-slate-300'
+                      }
+                    `}>
+                      {hasVoted ? (
+                        (showCards || isMe) ? vote : <div className="w-6 h-8 border border-white/50 rounded-sm"></div>
+                      ) : (
+                        <span className="text-xs">思考中</span>
+                      )}
+                    </div>
+                    {hasVoted && (
+                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full flex items-center justify-center">
+                        <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-sm font-medium ${isMe ? 'text-blue-600' : 'text-slate-700'}`}>
+                      {name} {isMe && '(你)'}
+                    </div>
+                  </div>
+                </div>
+              );
+            };
+
+
+          // 如果 Firebase 仍在載入或等待 Auth 設置
+          if (firebaseStatus === 'loading' || (firebaseStatus === 'success' && !user)) {
               return (
                   <div className="min-h-screen flex items-center justify-center bg-slate-50">
                       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-                      <p className="ml-4 text-slate-600">載入中...</p>
+                      <p className="ml-4 text-slate-600">載入服務中...</p>
                   </div>
               );
           }
